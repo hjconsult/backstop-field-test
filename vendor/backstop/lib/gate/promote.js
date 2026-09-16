@@ -371,13 +371,28 @@ export function runChecks(repoDir, taskId, { environment = "production", spent =
     return !depCommits.every((sha) => baseCommits.has(sha));
   });
   const fanOut = transitiveDependents(graph, taskId).filter((t) => t !== taskId);
+  // Two different reasons a dependency is acceptable, and the check has always
+  // known the difference: it has a promotion record, or its commits are on base
+  // anyway. Reporting both as "promoted" said something false in the case the
+  // field test produced — add-discount reached main through GitHub's merge
+  // button, so it has no record at all, and the gate called it promoted (TL58,
+  // TL62). `promoted` is a ledger record and `onBase` is reachability; the
+  // whole product rests on them being separate, so the sentence a human reads
+  // must not merge them either.
+  const deps = node?.dependsOn ?? [];
+  const promotedDeps = deps.filter((dep) => promoted.has(dep));
+  const onBaseOnly = deps.filter((dep) => !promoted.has(dep) && !unpromotedDeps.includes(dep));
   checks.push({
     name: "dependency-completeness",
     status: unpromotedDeps.length === 0 ? PASS : FAIL,
     detail:
-      unpromotedDeps.length === 0
-        ? `depends on ${(node?.dependsOn ?? []).length} promoted task(s); ${fanOut.length} task(s) downstream`
-        : `depends on unpromoted task(s): ${unpromotedDeps.join(", ")}`,
+      unpromotedDeps.length > 0
+        ? `depends on unpromoted task(s): ${unpromotedDeps.join(", ")}`
+        : onBaseOnly.length === 0
+          ? `depends on ${deps.length} promoted task(s); ${fanOut.length} task(s) downstream`
+          : `depends on ${deps.length} task(s): ${promotedDeps.length} promoted, ` +
+            `${onBaseOnly.length} on ${base} with no promotion record (${onBaseOnly.join(", ")}); ` +
+            `${fanOut.length} task(s) downstream`,
     impactFanOut: fanOut,
   });
 

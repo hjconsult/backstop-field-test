@@ -246,7 +246,14 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    console.log(`Promoted ${taskId} → ${result.base} (${result.record.mergeCommit.slice(0, 8)}).`);
+    // Name where it actually landed. Promoting from a worktree pushes to the
+    // remote and deliberately leaves the local base ref alone (TL61), so
+    // "→ main" would send the operator to look at a branch that did not move.
+    const landed = result.landedOn ?? result.base;
+    console.log(`Promoted ${taskId} → ${landed} (${result.record.mergeCommit.slice(0, 8)}).`);
+    if (result.landedOn) {
+      console.log(`Local ${result.base} is unchanged — it belongs to another worktree. Fetch to see this.`);
+    }
     if (result.live?.status === "live") {
       console.log(`Live: ${result.live.url} (${result.live.deploymentId})`);
     } else if (result.live) {
