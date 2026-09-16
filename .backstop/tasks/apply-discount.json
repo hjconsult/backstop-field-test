@@ -1,0 +1,15 @@
+{
+  "taskId": "apply-discount",
+  "branch": "task/apply-discount",
+  "scope": [
+    "src/**",
+    "test/**"
+  ],
+  "policyCategory": "default",
+  "relatesTo": [],
+  "intent": {
+    "text": "prove the gated path and the worktree landing on a real remote",
+    "source": "declared"
+  },
+  "declaredAt": "2026-09-16T22:41:04.742Z"
+}
