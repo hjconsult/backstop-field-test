@@ -1,2 +1,3 @@
 const pricing = require('./pricing');
-module.exports = { pricing };
+const discount = require('./discount');
+module.exports = { pricing, discount };
