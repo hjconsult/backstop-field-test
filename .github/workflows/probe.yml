@@ -1,0 +1,14 @@
+# Diagnostic only. Not part of the field test's data.
+#
+# Every run in this repository so far -- and all 71 in hjconsult/Backstop --
+# came back `startup_failure` with zero jobs and zero duration. Two repos,
+# two different workflow files, the same result, means the cause is not in
+# either file. This is the smallest workflow GitHub will accept: if it also
+# fails to start, the cause is above the repository.
+name: probe
+on: push
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello
