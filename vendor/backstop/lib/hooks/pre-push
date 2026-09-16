@@ -1,0 +1,66 @@
+#!/bin/sh
+# Backstop pre-push hook — a SPEED BUMP, NOT THE BREAKER.
+#
+# Anyone can skip this with `git push --no-verify`, and it does not exist in
+# a fresh clone until installed. That makes it useful for catching mistakes
+# early and useless as enforcement: an agent that can bypass a check has an
+# advisory check, which is the exact failure this project exists to fix.
+#
+# Real enforcement is the same check mounted where the pusher cannot reach
+# it — a required status check on the remote, or a self-hosted runner.
+# See docs/design/PROMOTION-GATE.md.
+#
+# The CLI path below is written in at install time. The first version of this
+# hook ran `node --test test/*.test.js` and `node bin/backstop.js` — relative
+# paths true only of Backstop's own checkout. Installed into any other repo it
+# aborted every push and reported "the ledger does not build", blaming the
+# user's ledger for the hook's own unportability. Worse, `node --test` on a
+# glob that matches nothing exits 0 with "0 tests" — so in a repo laid out
+# differently, the check that is the hook's entire reason for existing
+# reported success having run nothing.
+
+set -e
+
+BACKSTOP_CLI="__BACKSTOP_CLI__"
+
+if [ ! -f "$BACKSTOP_CLI" ]; then
+  echo "backstop: $BACKSTOP_CLI is gone — the hook cannot check anything."
+  echo "backstop: reinstall with \`backstop install-hook\`, or remove .git/hooks/pre-push."
+  exit 1
+fi
+
+echo "backstop: pre-push checks (speed bump — not enforcement)"
+
+# Whether the ledger parses at all. A ledger that does not build makes every
+# later answer — what is promoted, what is live, what depends on what —
+# unavailable, so it is worth catching before the push rather than after.
+if ! node "$BACKSTOP_CLI" status --json >/tmp/backstop-prepush.log 2>&1; then
+  echo "backstop: the ledger does not build — push aborted."
+  tail -20 /tmp/backstop-prepush.log
+  exit 1
+fi
+
+# The repo's own configured verification, not Backstop's. Exit 2 means nothing
+# is configured: say so and let the push through, because a hook that blocks
+# every push in a repo that has not configured verification is the brick this
+# hook used to be. The gate still blocks on it — that is where enforcement lives.
+set +e
+node "$BACKSTOP_CLI" verify >/tmp/backstop-prepush.log 2>&1
+VERIFY_STATUS=$?
+set -e
+
+if [ "$VERIFY_STATUS" -eq 2 ]; then
+  echo "backstop: nothing configured to verify — set verifyCommand in .backstop/policy.json."
+  echo "backstop: \`backstop promote\` blocks on this; this hook does not."
+  exit 0
+fi
+
+if [ "$VERIFY_STATUS" -ne 0 ]; then
+  echo "backstop: verification FAILED — push aborted."
+  tail -30 /tmp/backstop-prepush.log
+  echo ""
+  echo "Fix it, or bypass with --no-verify (which is exactly what this hook cannot stop)."
+  exit 1
+fi
+
+echo "backstop: verification passed."

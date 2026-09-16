@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Backstop graph</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#0a0c11;--surface:#12151d;--border:#262c3a;--text:#edeff5;--muted:#8b93a6;
+    --accent:#ff5a2e;--cyan:#35e0c7;--bad:#ff4d6d;--warn:#ffb020;
+  }
+  *{box-sizing:border-box;}
+  /* Column flex rather than a magic canvas height: the legend wraps to two
+     or three lines as the viewport narrows, and a fixed 100vh-110px could
+     not know that — so the legend fell below the fold, entirely invisible
+     on a phone. Letting the canvas take the remaining space instead means
+     the key is always on screen, which matters now that colour carries
+     the most important signal in the view. */
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:20px;
+       min-height:100vh;display:flex;flex-direction:column;box-sizing:border-box;}
+  header{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;margin-bottom:14px;}
+  h1{font-size:16px;margin:0;letter-spacing:.02em;}
+  .counts{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);}
+  .hint{font-size:12px;color:var(--muted);margin-left:auto;}
+  .warnline{font-family:ui-monospace,monospace;font-size:12px;color:var(--warn);}
+  /* height:0 is load-bearing. The drawing buffer is sized by attribute at
+     devicePixelRatio scale (canvas.height = rect.height * dpr), and with no
+     CSS height that intrinsic value leaks into layout — the page became
+     twice the viewport. Pinning CSS height to 0 lets flex compute it. */
+  canvas{width:100%;height:0;flex:1 1 auto;min-height:300px;display:block;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer;}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;flex:0 0 auto;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--muted);margin-top:10px;}
+  .key{display:flex;align-items:center;gap:7px;}
+  .sw{width:11px;height:11px;flex:none;}
+  .sw.circle{border-radius:50%;background:var(--cyan);}
+  .sw.ungated{border-radius:50%;background:var(--warn);}
+  .sw.inflight{border-radius:50%;background:var(--surface);border:1.5px solid var(--cyan);}
+  .sw.diamond{background:var(--accent);transform:rotate(45deg);}
+  .sw.line{width:16px;height:2px;background:var(--cyan);}
+  .sw.dashed{width:16px;height:0;border-top:2px dashed var(--bad);}
+  .sw.relates{width:16px;height:0;border-top:2px dotted var(--muted);}
+</style>
+</head>
+<body>
+<header>
+  <h1>BACKSTOP · graph</h1>
+  <span class="counts" id="counts"></span>
+  <span class="hint">click a node to trace what depends on it</span>
+</header>
+<canvas id="c"></canvas>
+<div class="legend">
+  <div class="key"><span class="sw circle"></span>promoted</div>
+  <div class="key"><span class="sw ungated"></span>on base, never gated</div>
+  <div class="key"><span class="sw inflight"></span>in flight</div>
+  <div class="key"><span class="sw diamond"></span>deployment</div>
+  <div class="key"><span class="sw line"></span>dependency</div>
+  <div class="key"><span class="sw dashed"></span>reverted</div>
+  <div class="key"><span class="sw relates"></span>relates to</div>
+</div>
+<script>
+// Data is embedded at generation time by lib/graph-view/render.js — no
+// fetch, no imports, so the file opens anywhere (file://, a share, a
+// gist) with nothing else needed.
+var STATUS = /*__BACKSTOP_STATUS_JSON__*/{"tasks":[],"deployments":[]}/*__END__*/;
+
+function graphFromStatus(status){
+  var nodes=[], edges=[];
+  (status.tasks||[]).forEach(function(t){
+    nodes.push({id:t.taskId, kind:'task', status:t.status||'active', promoted:t.promoted, onBase:t.onBase});
+    (t.dependsOn||[]).forEach(function(d){ edges.push({from:d, to:t.taskId, kind:'dep'}); });
+  });
+  (status.relations||[]).forEach(function(r){
+    edges.push({from:r.from, to:r.to, kind:'relates-to'});
+  });
+  (status.deployments||[]).forEach(function(d){
+    nodes.push({id:d.deploymentId, kind:'deployment', environment:d.environment});
+    if(d.taskId) edges.push({from:d.taskId, to:d.deploymentId, kind:'deploy'});
+  });
+  return {nodes:nodes, edges:edges};
+}
+
+var G = graphFromStatus(STATUS);
+var ungatedCount = G.nodes.filter(function(n){return n.kind!=='deployment'&&taskState(n)==='ungated';}).length;
+if(ungatedCount){
+  var warn=document.createElement('span');
+  warn.className='warnline';
+  warn.textContent=ungatedCount+' on base, never gated';
+  document.querySelector('header').appendChild(warn);
+}
+document.getElementById('counts').textContent =
+  G.nodes.filter(function(n){return n.kind==='task';}).length + ' tasks · ' +
+  G.nodes.filter(function(n){return n.kind==='deployment';}).length + ' deployments · ' +
+  G.edges.length + ' edges';
+
+var canvas=document.getElementById('c'), ctx=canvas.getContext('2d');
+var dpr=window.devicePixelRatio||1, selected=null;
+var byId={}; G.nodes.forEach(function(n){ byId[n.id]=n; });
+
+function size(){
+  var r=canvas.getBoundingClientRect();
+  canvas.width=r.width*dpr; canvas.height=r.height*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {w:r.width,h:r.height};
+}
+function layout(){
+  var d=size(), w=d.w, h=d.h, N=G.nodes.length;
+  G.nodes.forEach(function(n,i){
+    var a=(i/Math.max(N,1))*Math.PI*2;
+    n.x=w/2+Math.cos(a)*w*0.32; n.y=h/2+Math.sin(a)*h*0.32;
+  });
+  for(var it=0;it<400;it++){
+    G.nodes.forEach(function(n){n.fx=0;n.fy=0;});
+    for(var i=0;i<N;i++)for(var j=i+1;j<N;j++){
+      var a=G.nodes[i],b=G.nodes[j],dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||0.01,dd=Math.sqrt(d2),f=4000/d2;
+      a.fx+=dx/dd*f;a.fy+=dy/dd*f;b.fx-=dx/dd*f;b.fy-=dy/dd*f;
+    }
+    G.edges.forEach(function(e){
+      var a=byId[e.from],b=byId[e.to]; if(!a||!b)return;
+      var dx=b.x-a.x,dy=b.y-a.y,dd=Math.sqrt(dx*dx+dy*dy)||0.01,f=(dd-150)*0.02;
+      a.fx+=dx/dd*f;a.fy+=dy/dd*f;b.fx-=dx/dd*f;b.fy-=dy/dd*f;
+    });
+    G.nodes.forEach(function(n){
+      n.fx+=(w/2-n.x)*0.006;n.fy+=(h/2-n.y)*0.006;
+      n.x+=n.fx*0.6;n.y+=n.fy*0.6;
+      n.x=Math.max(60,Math.min(w-60,n.x));n.y=Math.max(40,Math.min(h-40,n.y));
+    });
+  }
+  fit(w,h);
+}
+/* The force constants are absolute, so a handful of tasks settle into a small
+   knot in the middle of whatever canvas they are given — legible, but mostly
+   empty space. Scale the settled layout to the frame instead of tuning the
+   forces per graph size, which would change the shape rather than the zoom.
+   Capped so that two nodes do not end up the size of a billboard. */
+function fit(w,h){
+  var N=G.nodes.length; if(!N) return;
+  var minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  G.nodes.forEach(function(n){
+    if(n.x<minX)minX=n.x; if(n.x>maxX)maxX=n.x;
+    if(n.y<minY)minY=n.y; if(n.y>maxY)maxY=n.y;
+  });
+  var padX=110, padY=70;                      /* labels sit to the right of nodes */
+  var bw=Math.max(maxX-minX,1), bh=Math.max(maxY-minY,1);
+  var s=Math.min((w-2*padX)/bw,(h-2*padY)/bh,4.0);
+  if(!isFinite(s)||s<=0) return;
+  var cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+  G.nodes.forEach(function(n){
+    n.x=w/2+(n.x-cx)*s;
+    n.y=h/2+(n.y-cy)*s;
+  });
+}
+function dependents(id){
+  var out={}; out[id]=true; var changed=true;
+  while(changed){ changed=false; G.edges.forEach(function(e){ if(e.kind==='dep'&&out[e.from]&&!out[e.to]){out[e.to]=true;changed=true;} }); }
+  return out;
+}
+/* Fill says whether the work landed on the base branch; colour says whether it
+   passed the gate. A solid amber node is therefore work that is live and was
+   never gated — the finding this product exists to surface — and it is the
+   loudest thing on the canvas by design. `unknown` exists because a status
+   file written before these fields did cannot tell "not promoted" from "we do
+   not know", and drawing the second as the first would accuse work that is
+   fine. */
+function taskState(n){
+  if(n.status==='reverted') return 'reverted';
+  if(n.promoted) return 'promoted';
+  if(n.onBase===true) return 'ungated';
+  if(n.onBase===false) return 'inflight';
+  return 'unknown';
+}
+var NODE_FILL={promoted:'#35e0c7',ungated:'#ffb020',inflight:'#12151d',unknown:'#35e0c7',reverted:'#3a2530'};
+var NODE_NOTE={ungated:'on base, not promoted',inflight:'in flight',promoted:'',unknown:'',reverted:''};
+
+function draw(){
+  var d=size(); ctx.clearRect(0,0,d.w,d.h);
+  var hl=selected?dependents(selected):null;
+  G.edges.forEach(function(e){
+    var a=byId[e.from],b=byId[e.to]; if(!a||!b)return;
+    var dim=hl&&!(hl[e.from]&&hl[e.to]);
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    if(e.kind==='deploy'){ctx.strokeStyle='rgba(255,90,46,'+(dim?0.12:0.55)+')';ctx.setLineDash([2,4]);}
+    // relates-to is a retrieval aid, not a safety edge — drawn faint so it
+    // never reads as a dependency the cascade would follow.
+    else if(e.kind==='relates-to'){ctx.strokeStyle='rgba(139,147,166,'+(dim?0.08:0.28)+')';ctx.setLineDash([1,5]);}
+    else{ctx.strokeStyle='rgba(53,224,199,'+(dim?0.12:0.55)+')';ctx.setLineDash([]);}
+    ctx.lineWidth=1.6;ctx.stroke();ctx.setLineDash([]);
+  });
+  G.nodes.forEach(function(n){
+    var dim=hl&&!hl[n.id], sel=selected===n.id, r=9;
+    ctx.globalAlpha=dim?0.28:1;
+    ctx.beginPath();
+    if(n.kind==='deployment'){ctx.save();ctx.translate(n.x,n.y);ctx.rotate(Math.PI/4);ctx.rect(-r,-r,r*2,r*2);ctx.restore();}
+    else ctx.arc(n.x,n.y,r,0,Math.PI*2);
+    var st=n.kind==='deployment'?null:taskState(n);
+    ctx.fillStyle=n.kind==='deployment'?'#ff5a2e':NODE_FILL[st];
+    ctx.fill();
+    /* Work that has not landed is drawn hollow: an outline is the honest shape
+       for something that exists but is not anywhere yet. */
+    if(st==='inflight'){ctx.lineWidth=1.6;ctx.strokeStyle='#35e0c7';ctx.stroke();}
+    if(st==='ungated'){ctx.lineWidth=2.2;ctx.strokeStyle='#ffb020';ctx.stroke();}
+    if(sel){ctx.lineWidth=2;ctx.strokeStyle='#fff';ctx.stroke();}
+    if(st==='reverted'){ctx.lineWidth=1.6;ctx.strokeStyle='#ff4d6d';ctx.setLineDash([3,3]);ctx.stroke();ctx.setLineDash([]);}
+    ctx.font='600 11px ui-monospace,monospace';
+    ctx.fillStyle=dim?'rgba(237,239,245,.4)':(st==='ungated'?'#ffb020':'#edeff5');ctx.textAlign='left';
+    ctx.fillText(n.id+(st==='reverted'?' ✕':'')+(st==='ungated'?' !':''),n.x+14,n.y+3);
+    ctx.font='400 10px system-ui,sans-serif';ctx.fillStyle=dim?'rgba(139,147,166,.35)':(st==='ungated'?'rgba(255,176,32,.85)':'#8b93a6');
+    ctx.fillText(n.kind==='deployment'?(n.environment||''):(NODE_NOTE[st]||''),n.x+14,n.y+15);
+    ctx.globalAlpha=1;
+  });
+}
+canvas.addEventListener('click',function(e){
+  var r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top,hit=null;
+  G.nodes.forEach(function(n){ if(Math.hypot(n.x-mx,n.y-my)<16) hit=n.id; });
+  selected=(hit&&hit!==selected)?hit:null; draw();
+});
+window.addEventListener('resize',function(){layout();draw();});
+layout();draw();
+</script>
+</body>
+</html>
