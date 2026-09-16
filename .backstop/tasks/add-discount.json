@@ -1,0 +1,15 @@
+{
+  "taskId": "add-discount",
+  "branch": "task/add-discount",
+  "scope": [
+    "src/**",
+    "test/**"
+  ],
+  "policyCategory": "default",
+  "relatesTo": [],
+  "intent": {
+    "text": "prove the gate runs as a required check on a real host",
+    "source": "declared"
+  },
+  "declaredAt": "2026-09-16T21:30:16.852Z"
+}
