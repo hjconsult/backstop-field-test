@@ -38,6 +38,28 @@ const git = (repoDir, args) =>
   execFileSync("git", args, { cwd: repoDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
 /**
+ * The gate acts as itself, never as whoever happens to be logged in.
+ *
+ * A stock GitHub Actions runner has no `user.name` or `user.email` — nothing
+ * in the default setup configures one — so `git merge` died with
+ * `fatal: empty ident name (for <runner@runnervm….internal.cloudapp.net>)`
+ * on the very first gate run against a real host. Every PR would have been
+ * blocked, on the most ordinary CI configuration there is, and (until the
+ * preview stopped swallowing git's error) the message would have said the
+ * branch did not merge cleanly.
+ *
+ * Passing the identity per-invocation rather than writing it into the repo's
+ * config keeps it out of the operator's settings, and it is the same identity
+ * every time, so a merge the gate built is attributable to the gate.
+ */
+export const GATE_IDENTITY = [
+  "-c", "user.name=Backstop gate",
+  "-c", "user.email=gate@backstop.invalid",
+];
+
+const gitAsGate = (repoDir, args) => git(repoDir, [...GATE_IDENTITY, ...args]);
+
+/**
  * Build the merge of `branch` into `base` in a throwaway worktree and hand it
  * to `fn`. Never mutates the repository: the worktree is detached, no branch
  * moves, and the merge is left uncommitted.
@@ -169,12 +191,25 @@ export function withMergePreview(repoDir, base, branch, fn) {
     try {
       // --no-commit: we want the tree, not a commit. Nothing here should be
       // able to leave a commit behind that someone later mistakes for real.
-      git(worktree, ["merge", "--no-commit", "--no-ff", branch]);
-    } catch {
+      gitAsGate(worktree, ["merge", "--no-commit", "--no-ff", branch]);
+    } catch (err) {
       try {
         conflicts = git(worktree, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
       } catch { /* the conflict list is a nicety; failing to read it is not fatal */ }
-      return { mergeable: false, conflicts, result: null };
+      // "git merge failed" and "the branches conflict" are different facts, and
+      // this catch used to report both as the second. A gate blocked a change
+      // on a real host with "does not merge cleanly" when the two branches were
+      // strictly fast-forwardable and could not possibly conflict — the merge
+      // had failed for an environmental reason, and the one line that would
+      // have named it was discarded here. That is the swallow-into-a-fallback
+      // shape CLAUDE.md already forbids on the derivation side; a breaker that
+      // cannot say why it blocked is not much better than one that cannot
+      // block.
+      const stderr = (err.stderr?.toString() || err.message || "").trim();
+      const failure = conflicts.length > 0
+        ? null
+        : stderr.split("\n").filter(Boolean).pop() || "git merge failed and said nothing";
+      return { mergeable: false, conflicts, failure, result: null };
     }
 
     // Strip the gate's own state BEFORE anything the gated party wrote can

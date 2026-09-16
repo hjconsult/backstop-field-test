@@ -28,7 +28,7 @@
 
 import { execFileSync } from "node:child_process";
 import { appendRecord, recordPromoted, commitLedger } from "../ledger-store.js";
-import { withGateWorktree } from "./merge-preview.js";
+import { withGateWorktree, GATE_IDENTITY } from "./merge-preview.js";
 
 const git = (dir, args) =>
   execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -95,7 +95,7 @@ export function landOnRemote(repoDir, { base, branch, taskId, at, record, holder
 
     let mergeCommit;
     try {
-      git(worktree, ["merge", "--no-ff", "-m", `Promote ${taskId}`, branch]);
+      git(worktree, [...GATE_IDENTITY, "merge", "--no-ff", "-m", `Promote ${taskId}`, branch]);
       mergeCommit = git(worktree, ["rev-parse", "HEAD"]);
     } catch (err) {
       const detail = (err.stderr?.toString() || err.message).split("\n")[0];
