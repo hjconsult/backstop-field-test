@@ -1,0 +1,68 @@
+# The Backstop promotion gate, mounted where the pusher cannot reach it.
+#
+# This is the point of the whole repository: Backstop's central claim is that
+# its limits are enforced rather than advisory, and the mechanism is that
+# `promote` exits non-zero so it can be a REQUIRED status check. Until this
+# runs against a real PR on a real host, that claim is untested — and TL52
+# found the Backstop repo's own workflow had never executed once in 71 runs.
+
+name: backstop gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suite:
+    name: enumerated scenarios
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      # Explicit pass count: `node --test` exits 0 on an empty suite, so
+      # without this, deleting the test directory turns CI green (TL57).
+      - name: run the suite
+        run: |
+          node --test 2>&1 | tee /tmp/suite.log
+          grep -qE '^# pass [1-9]' /tmp/suite.log || {
+            echo "::error::the suite reported no passing tests — nothing was verified"
+            exit 1
+          }
+
+  gate:
+    name: promotion gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      # A CI clone has the task branch only as a remote-tracking ref, and the
+      # gate resolves those (TL48). Fetch both explicitly rather than relying
+      # on what the default checkout happens to leave behind.
+      - name: fetch base and head refs
+        run: git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: what is actually mounted
+        run: node vendor/backstop/bin/backstop.js doctor || true
+
+      - name: run the gate
+        run: |
+          HEAD_REF="${{ github.head_ref }}"
+          case "$HEAD_REF" in
+            task/*)
+              TASK_ID="${HEAD_REF#task/}"
+              echo "Gating $TASK_ID (branch $HEAD_REF)"
+              node vendor/backstop/bin/backstop.js check "$TASK_ID" --spent 1
+              ;;
+            *)
+              echo "::notice::$HEAD_REF is not a task branch, so there is no task to gate."
+              echo "Branch from \`backstop task start <id>\` to have this PR gated."
+              echo "This job is reporting that it did not run the gate — it is not a pass."
+              exit 1
+              ;;
+          esac

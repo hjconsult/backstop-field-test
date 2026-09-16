@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "verifyCommand": "node --test",
+  "verifyTimeoutMs": 600000,
+  "budget": {
+    "limit": 25,
+    "unit": "usd"
+  },
+  "checks": {},
+  "meters": {},
+  "environments": {
+    "production": {
+      "live": true,
+      "realUsers": false,
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  "lineageIgnore": null,
+  "baseBranch": "main"
+}
