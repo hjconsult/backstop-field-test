@@ -4,6 +4,7 @@
 
 import { execFileSync } from "node:child_process";
 import { isSourceFile, parseSpecifiers, resolveCandidates } from "./imports.js";
+import { resolveRef } from "./refs.js";
 import { BACKSTOP_DIR, loadPolicy } from "./policy.js";
 import { matchesAnyGlob } from "./gate/scope-check.js";
 import { promotedTaskIds } from "./ledger-store.js";
@@ -491,8 +492,12 @@ function applyPromotionState(repoDir, commits, graph) {
   const promoted = promotedTaskIds(repoDir);
   let base;
   try {
-    base = loadPolicy(repoDir).baseBranch;
-    git(["rev-parse", "--verify", base], repoDir);
+    // Resolved, because a CI clone has the base branch only as a
+    // remote-tracking ref. Without this the catch below was reached in every CI
+    // clone and onBase read as unknowable there — quieter than the gate's crash
+    // on the same cause, and wrong in the same way (TL65).
+    base = resolveRef(repoDir, loadPolicy(repoDir).baseBranch);
+    if (!base) throw new Error("base branch not found in this clone");
   } catch {
     base = null; // no policy or no base branch yet — onBase is unknowable, not false
   }
