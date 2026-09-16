@@ -15,6 +15,7 @@ import { checkScope, routeScopeViolation } from "./scope-check.js";
 import { dialSeverity } from "./exposure.js";
 import { scopeIntegrity } from "./declaration-integrity.js";
 import { withMergePreview } from "./merge-preview.js";
+import { resolveRef } from "../refs.js";
 import { landOnRemote, worktreeHolding, worktreeRoot } from "./land.js";
 import { classifyMigration } from "../adapters/supabase.js";
 import { classifyBudget } from "../budget.js";
@@ -50,15 +51,9 @@ function git(args, cwd) {
  * The remote-tracking ref is if anything the better source: it is what is
  * actually on the remote, rather than a local copy that may have drifted.
  */
-export function resolveRef(repoDir, branch) {
-  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    try {
-      git(["rev-parse", "--verify", ref], repoDir);
-      return ref;
-    } catch { /* try the next candidate */ }
-  }
-  return null;
-}
+
+
+export { resolveRef };
 
 /** Does this task actually have a branch? Asked before anything tries to diff it. */
 export function taskBranchExists(repoDir, branch) {
@@ -367,8 +362,11 @@ export function runChecks(repoDir, taskId, { environment = "production", spent =
   const graph = buildGraph(repoDir, branchRef);
   const node = graph.find((n) => n.taskId === taskId);
   const promoted = promotedTaskIds(repoDir);
+  // baseRef, not base: a CI clone has no local `main`, so the raw name is an
+  // unknown revision and this crashed the gate outright on a real runner —
+  // after structural-validation had resolved its own refs and passed (TL65).
   const baseCommits = new Set(
-    git(["rev-list", base], repoDir).split("\n").filter(Boolean),
+    git(["rev-list", baseRef], repoDir).split("\n").filter(Boolean),
   );
   const unpromotedDeps = (node?.dependsOn ?? []).filter((dep) => {
     if (promoted.has(dep)) return false;
