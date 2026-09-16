@@ -1,0 +1,14 @@
+{
+  "taskId": "wander",
+  "branch": "task/wander",
+  "scope": [
+    "src/**"
+  ],
+  "policyCategory": "default",
+  "relatesTo": [],
+  "intent": {
+    "text": "prove the gate blocks a scope violation as a real CI check",
+    "source": "declared"
+  },
+  "declaredAt": "2026-09-16T22:54:58.568Z"
+}
