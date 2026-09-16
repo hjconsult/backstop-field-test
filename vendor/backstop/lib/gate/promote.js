@@ -213,13 +213,18 @@ export function runChecks(repoDir, taskId, { environment = "production", spent =
   if (!preview.mergeable) {
     // A branch that does not merge has no result to verify, and claiming
     // either a pass or a failure of the verify command would be an invention.
+    //
+    // Two different facts, and they used to print the same. A conflict is the
+    // author's problem; a merge that could not run at all is the gate's, and
+    // saying "does not merge cleanly" about branches that are strictly
+    // fast-forwardable sends whoever reads it to look in the wrong place.
     checks.push({
       name: "structural-validation",
       status: FAIL,
-      detail:
-        `${branch} does not merge cleanly into ${base}` +
-        (preview.conflicts.length ? `: ${preview.conflicts.join(", ")}` : "") +
-        " — there is no merge result to verify",
+      detail: preview.conflicts.length
+        ? `${branch} conflicts with ${base}: ${preview.conflicts.join(", ")} — there is no merge result to verify`
+        : `the gate could not merge ${branch} into ${base}, so there is no merge result to verify. ` +
+          `git said: ${preview.failure ?? "nothing"}`,
     });
     return { ok: false, checks, branch, base, files, environment, exposure, fanOut: [], declaration: null };
   }

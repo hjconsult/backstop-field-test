@@ -170,11 +170,24 @@ export function withMergePreview(repoDir, base, branch, fn) {
       // --no-commit: we want the tree, not a commit. Nothing here should be
       // able to leave a commit behind that someone later mistakes for real.
       git(worktree, ["merge", "--no-commit", "--no-ff", branch]);
-    } catch {
+    } catch (err) {
       try {
         conflicts = git(worktree, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
       } catch { /* the conflict list is a nicety; failing to read it is not fatal */ }
-      return { mergeable: false, conflicts, result: null };
+      // "git merge failed" and "the branches conflict" are different facts, and
+      // this catch used to report both as the second. A gate blocked a change
+      // on a real host with "does not merge cleanly" when the two branches were
+      // strictly fast-forwardable and could not possibly conflict — the merge
+      // had failed for an environmental reason, and the one line that would
+      // have named it was discarded here. That is the swallow-into-a-fallback
+      // shape CLAUDE.md already forbids on the derivation side; a breaker that
+      // cannot say why it blocked is not much better than one that cannot
+      // block.
+      const stderr = (err.stderr?.toString() || err.message || "").trim();
+      const failure = conflicts.length > 0
+        ? null
+        : stderr.split("\n").filter(Boolean).pop() || "git merge failed and said nothing";
+      return { mergeable: false, conflicts, failure, result: null };
     }
 
     // Strip the gate's own state BEFORE anything the gated party wrote can
