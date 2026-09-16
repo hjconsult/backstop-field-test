@@ -8,7 +8,8 @@ import { execFileSync } from "node:child_process";
 import { buildGraph, readHistory } from "../lib/ledger.js";
 import { transitiveDependents, commitsForTasks } from "../lib/cascade.js";
 import { revertWithVerification } from "../lib/revert.js";
-import { startTask, currentTaskId } from "../lib/task.js";
+import { startTask, currentTaskId, currentBranch } from "../lib/task.js";
+import { appendRecord, commitLedger } from "../lib/ledger-store.js";
 import { promote, runChecks } from "../lib/gate/promote.js";
 import { loadPolicy, writePolicy, DEFAULT_POLICY, policyPath, ensureLedgerMergeDriver } from "../lib/policy.js";
 import { parseDeployments, correlateDeployments, fetchDeployments, fetchProductionTarget, markLive, liveTaskIds } from "../lib/adapters/vercel.js";
@@ -266,7 +267,7 @@ async function main() {
   if (command === "revert") {
     const taskId = args.find((a) => !a.startsWith("--"));
     const cascade = flag("cascade");
-    if (!taskId) return fail("Usage: backstop revert <task-id> [--cascade]");
+    if (!taskId) return fail("Usage: backstop revert <task-id> [--cascade] [--push]");
 
     const commits = readHistory(repoDir);
     const graph = buildGraph(repoDir);
@@ -314,6 +315,59 @@ async function main() {
       console.log(`  ${r.sha.slice(0, 8)}  ${r.taskId}  ${r.status}${r.error ? `  ${r.error}` : ""}`);
     }
     console.log(`\nStatus: ${status}`);
+
+    // An undo that leaves no record is the recorder's own blind spot. The
+    // ledger held `promoted`, `blocked`, `promotion-failed` and
+    // `deploy-outcome` — every consequential act except the most consequential
+    // one. cascade.js already reasons that "promoted, then reverted" is the
+    // truth and that a revert must never rewind the promotion record; there was
+    // no "then reverted" half for it to complete. Found in the field test: two
+    // tasks reverted on real data, and the ledger said promoted and nothing
+    // else. Status reads [REVERTED] because it derives that from the revert
+    // commits, which is the stronger source and stays the source — this record
+    // is the durable, queryable half, not a second opinion.
+    if (status !== "revert-failed") {
+      const at = new Date().toISOString();
+      for (const id of affected) {
+        const mine = results.filter((x) => x.taskId === id);
+        appendRecord(repoDir, {
+          event: "reverted",
+          taskId: id,
+          at,
+          revertedCommits: mine.map((x) => x.sha),
+          revertCommits: mine.map((x) => x.revertCommit).filter(Boolean),
+          // The whole set, on every record, so reading one task's history
+          // answers "what else went with it" without re-deriving the graph.
+          cascade: affected,
+          requestedFor: taskId,
+          verification: status,
+        });
+      }
+      commitLedger(repoDir, { message: `Ledger: reverted ${affected.join(", ")}`, taskId });
+    }
+
+    // Reverting is local until it is pushed, and TL61 established that a
+    // fleet's base branch lives on the remote. Measured in the field test: both
+    // tasks reverted here, and a fresh clone still had every file and reported
+    // both tasks live. Symmetric with `promote --push` rather than automatic,
+    // because pushing is a decision.
+    if (flag("push")) {
+      const branchNow = currentBranch(repoDir);
+      try {
+        execFileSync("git", ["push", "origin", `HEAD:refs/heads/${branchNow}`], {
+          cwd: repoDir, stdio: ["ignore", "pipe", "pipe"],
+        });
+        console.log(`Pushed the revert to origin/${branchNow}.`);
+      } catch (err) {
+        console.error(`The revert is committed locally but the push failed: ${(err.stderr?.toString() || err.message).split("\n")[0]}`);
+        console.error("Until it is pushed, every other clone still has this work.");
+        process.exitCode = 1;
+        return;
+      }
+    } else {
+      console.log(`This revert is local. \`backstop revert ${taskId}${cascade ? " --cascade" : ""} --push\` lands it where the work did.`);
+    }
+
     if (status === "reverted+broken") {
       console.error("The revert applied cleanly but the tree does not verify — a dependent this cascade missed is likely broken.");
       if (verification?.output) console.error(verification.output.slice(-800));
@@ -405,7 +459,7 @@ async function main() {
       "  backstop task start <task-id> [--scope <glob>]... [--relates-to <task-id>]... [--category <name>] [--intent <why>]",
       "  backstop check <task-id> [--env <environment>] [--spent <amount>]",
       "  backstop promote <task-id> [--env <environment>] [--spent <amount>] [--push] [--deploy]",
-      "  backstop revert <task-id> [--cascade]",
+      "  backstop revert <task-id> [--cascade] [--push]",
       "  backstop graph [outfile] [--deployments]",
       "  backstop install-hook [--uninstall]",
       "  backstop verify",

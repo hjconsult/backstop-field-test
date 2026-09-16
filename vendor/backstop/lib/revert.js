@@ -6,6 +6,9 @@
 import { execFileSync } from "node:child_process";
 import { runVerify } from "./verify.js";
 
+const head = (repoDir) =>
+  execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
 export function revertCommits(repoDir, commits) {
   // commits arrive oldest-first (repo-chronological); revert newest-first.
   const newestFirst = [...commits].reverse();
@@ -17,7 +20,7 @@ export function revertCommits(repoDir, commits) {
         ["revert", "--no-edit", "-m", "1", sha],
         { cwd: repoDir, stdio: ["ignore", "pipe", "pipe"] },
       );
-      results.push({ sha, taskId, status: "reverted" });
+      results.push({ sha, taskId, status: "reverted", revertCommit: head(repoDir) });
     } catch (err) {
       // A merge commit has no parent 1 in a linear history; retry as a
       // normal revert before giving up.
@@ -26,7 +29,7 @@ export function revertCommits(repoDir, commits) {
           cwd: repoDir,
           stdio: ["ignore", "pipe", "pipe"],
         });
-        results.push({ sha, taskId, status: "reverted" });
+        results.push({ sha, taskId, status: "reverted", revertCommit: head(repoDir) });
       } catch (err2) {
         results.push({
           sha,
