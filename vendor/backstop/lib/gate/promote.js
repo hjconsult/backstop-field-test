@@ -15,6 +15,7 @@ import { checkScope, routeScopeViolation } from "./scope-check.js";
 import { dialSeverity } from "./exposure.js";
 import { scopeIntegrity } from "./declaration-integrity.js";
 import { withMergePreview } from "./merge-preview.js";
+import { landOnRemote, worktreeHolding, worktreeRoot } from "./land.js";
 import { classifyMigration } from "../adapters/supabase.js";
 import { classifyBudget } from "../budget.js";
 import { buildGraph, readHistory } from "../ledger.js";
@@ -518,8 +519,33 @@ export async function promote(repoDir, taskId, opts = {}) {
   //
   // The record still precedes the merge, which is the property TL17 established:
   // an attempt that fails must not be invisible.
+  // Base may belong to a different working tree. Worktrees share one `.git`,
+  // so `refs/heads/<base>` is shared, and `git checkout` below would fail with
+  // "already used by worktree" — AUDIT-05 F9's third case, and the shape every
+  // parallel-agent setup has: one clone on main, N worktrees on task/*. Every
+  // check passes there; only the landing failed. Land on the remote instead of
+  // moving a ref out from under a tree this process does not own.
+  const onBase = currentBranch(repoDir) === result.base;
+  const holder = onBase ? null : worktreeHolding(repoDir, result.base);
+  if (holder && holder !== worktreeRoot(repoDir)) {
+    const landing = landOnRemote(repoDir, {
+      base: result.base, branch: result.branch, taskId, at, record, holder,
+    });
+    if (!landing.landed) return { ...result, promoted: false, mergeFailed: landing.detail };
+    // No `live` here: --deploy waits on a deployment of the pushed tip, and
+    // that path still runs from the tree that owns base. Reporting null rather
+    // than inventing an answer is the same rule as everywhere else.
+    return {
+      ...result,
+      promoted: true,
+      live: null,
+      landedOn: landing.pushedTo,
+      record: { ...record, mergeCommit: landing.mergeCommit },
+    };
+  }
+
   try {
-    if (currentBranch(repoDir) !== result.base) git(["checkout", "-q", result.base], repoDir);
+    if (!onBase) git(["checkout", "-q", result.base], repoDir);
   } catch (err) {
     const detail = err.stderr?.toString().trim() || err.message;
     return {

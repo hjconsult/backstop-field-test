@@ -127,7 +127,16 @@ export function sweepGateWorktrees(repoDir) {
  *   `result` is whatever `fn(dir)` returned, or null when the merge conflicted
  *   — there is no merge result to verify, and saying so is the honest answer.
  */
-export function withMergePreview(repoDir, base, branch, fn) {
+/**
+ * A detached, gate-owned worktree at `at`, handed to `fn`, removed afterwards
+ * whatever happens. Extracted so the landing path (lib/gate/land.js) creates
+ * its worktrees the same way this one does — same prefix, so the same sweep
+ * reclaims both, which is the whole reason the pid tagging exists.
+ *
+ * @returns {{result: unknown, leaked: string[]}} `leaked` is worktrees the
+ *   sweep could not remove; reported rather than swallowed.
+ */
+export function withGateWorktree(repoDir, at, fn) {
   // Before creating another one, clear any left by runs that died. Doing this
   // at the START rather than only at the end is what makes a killed gate
   // self-correcting instead of cumulative.
@@ -138,27 +147,8 @@ export function withMergePreview(repoDir, base, branch, fn) {
   rmSync(worktree, { recursive: true, force: true });
 
   try {
-    git(repoDir, ["worktree", "add", "--detach", "--quiet", worktree, base]);
-
-    let conflicts = [];
-    try {
-      // --no-commit: we want the tree, not a commit. Nothing here should be
-      // able to leave a commit behind that someone later mistakes for real.
-      git(worktree, ["merge", "--no-commit", "--no-ff", branch]);
-    } catch {
-      try {
-        conflicts = git(worktree, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
-      } catch { /* the conflict list is a nicety; failing to read it is not fatal */ }
-      return { mergeable: false, conflicts, result: null, leaked: swept.stuck };
-    }
-
-    // Strip the gate's own state BEFORE anything the gated party wrote can
-    // run. Not hidden, not read-only — absent. A verify command that reads
-    // .backstop/ to decide what to do is a verify command shaping the gate,
-    // and the point of this boundary is that it cannot.
-    rmSync(path.join(worktree, BACKSTOP_DIR), { recursive: true, force: true });
-
-    return { mergeable: true, conflicts: [], result: fn(worktree), leaked: swept.stuck };
+    git(repoDir, ["worktree", "add", "--detach", "--quiet", worktree, at]);
+    return { result: fn(worktree), leaked: swept.stuck };
   } finally {
     // --force because verify is expected to have left the tree dirty, and a
     // gate that refuses to clean up after a messy verify would leak a
@@ -171,4 +161,29 @@ export function withMergePreview(repoDir, base, branch, fn) {
     }
     if (existsSync(worktree)) rmSync(worktree, { recursive: true, force: true });
   }
+}
+
+export function withMergePreview(repoDir, base, branch, fn) {
+  const { result, leaked } = withGateWorktree(repoDir, base, (worktree) => {
+    let conflicts = [];
+    try {
+      // --no-commit: we want the tree, not a commit. Nothing here should be
+      // able to leave a commit behind that someone later mistakes for real.
+      git(worktree, ["merge", "--no-commit", "--no-ff", branch]);
+    } catch {
+      try {
+        conflicts = git(worktree, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
+      } catch { /* the conflict list is a nicety; failing to read it is not fatal */ }
+      return { mergeable: false, conflicts, result: null };
+    }
+
+    // Strip the gate's own state BEFORE anything the gated party wrote can
+    // run. Not hidden, not read-only — absent. A verify command that reads
+    // .backstop/ to decide what to do is a verify command shaping the gate,
+    // and the point of this boundary is that it cannot.
+    rmSync(path.join(worktree, BACKSTOP_DIR), { recursive: true, force: true });
+
+    return { mergeable: true, conflicts: [], result: fn(worktree) };
+  });
+  return { ...result, leaked };
 }

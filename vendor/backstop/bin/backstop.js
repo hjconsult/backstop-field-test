@@ -65,7 +65,14 @@ function printGraph(graph) {
     return;
   }
   for (const node of graph) {
-    const deps = node.dependsOn.length ? node.dependsOn.join(", ") : "(none)";
+    // "(none)" is a claim about the code, and it is wrong whenever the task
+    // imports files that predate the ledger — which is every file in a
+    // repository on the day it adopts Backstop. Say which kind of none it is.
+    const deps = node.dependsOn.length
+      ? node.dependsOn.join(", ")
+      : node.untrackedRefs?.length
+        ? `(none tracked; ${node.untrackedRefs.length} reference(s) into files no task owns)`
+        : "(none)";
     console.log(`${node.taskId}  [${node.commits.length} commit(s)]  depends on: ${deps}${marker(node)}`);
   }
   // Work sitting on the base branch with no promotion record is the line worth

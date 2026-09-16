@@ -3,7 +3,7 @@
 // own narration of what it did. See CLAUDE.md's constitutional rules.
 
 import { execFileSync } from "node:child_process";
-import { isSourceFile, importedPaths } from "./imports.js";
+import { isSourceFile, parseSpecifiers, resolveCandidates } from "./imports.js";
 import { BACKSTOP_DIR, loadPolicy } from "./policy.js";
 import { matchesAnyGlob } from "./gate/scope-check.js";
 import { promotedTaskIds } from "./ledger-store.js";
@@ -329,6 +329,7 @@ export function computeDependencyGraph(commits, { repoDir = null, lineageIgnore 
         commits: [],
         dependsOn: new Set(),
         edges: [],
+        untrackedRefs: [],
       });
     }
     const node = nodes.get(commit.taskId);
@@ -362,6 +363,11 @@ export function computeDependencyGraph(commits, { repoDir = null, lineageIgnore 
     // have meant all along: the artifact is the diff, not the file.
     if (repoDir) {
       const parent = commit.parents?.[0] ?? null;
+      // A file this same commit created is not yet in lastTouchedBy — that map
+      // is filled by the overlap pass below, which runs after this one. Without
+      // it, a task that adds a module and its caller together reads as
+      // referencing code no task owns, which is exactly backwards.
+      const touchedNow = new Set(commit.files);
       for (const file of commit.files) {
         if (!isSourceFile(file)) continue;
         const source = readBlob(commit.sha, file);
@@ -369,11 +375,28 @@ export function computeDependencyGraph(commits, { repoDir = null, lineageIgnore 
         // A file this commit created has no earlier version, so every
         // reference in it is new — which is the correct reading.
         const before = parent ? readBlob(parent, file) : null;
-        const alreadyThere = before === null ? new Set() : new Set(importedPaths(file, before));
-        for (const target of importedPaths(file, source)) {
-          if (alreadyThere.has(target)) continue;
-          const priorTask = lastTouchedBy.get(target);
-          if (priorTask) edge(priorTask, "import", `${file} -> ${target}`);
+        // Compared as SPECIFIERS, not as resolved candidates. One specifier
+        // expands to ~17 candidate paths, so a per-candidate count of what
+        // went unmatched says nothing an operator can read.
+        const alreadyThere = before === null ? new Set() : new Set(parseSpecifiers(before));
+        for (const specifier of parseSpecifiers(source)) {
+          if (alreadyThere.has(specifier)) continue;
+          let owned = false;
+          for (const target of resolveCandidates(file, specifier)) {
+            if (touchedNow.has(target)) owned = true;
+            const priorTask = lastTouchedBy.get(target);
+            if (!priorTask) continue;
+            owned = true; // true even when priorTask is this task: it is tracked either way
+            edge(priorTask, "import", `${file} -> ${target}`);
+          }
+          // A reference that resolves to no task is not an absence of
+          // dependency. In any repository that adopts Backstop, the entire
+          // existing tree is owned by no task, so the first tasks import into
+          // it and come out reading "depends on: (none)" — which is false
+          // about the code. Confirmed in the field test: add-discount requires
+          // ./pricing, and pricing.js was created by the untagged scaffold
+          // commit, so the graph showed no edge and said nothing about why.
+          if (!owned) node.untrackedRefs.push(`${file} -> ${specifier}`);
         }
       }
     }
